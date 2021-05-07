@@ -1,10 +1,15 @@
-use async_nats::{Connection, Options, Subscription};
+use async_nats::{Connection, Options};
 use async_trait::async_trait;
 use thiserror::Error;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::future::Future;
+
+mod event_handler;
+use event_handler::EventHandler;
+use event_handler::Event;
 
 #[async_trait]
 pub trait PubSub{
@@ -13,18 +18,31 @@ pub trait PubSub{
 }
 
 #[derive(Clone)]
-pub struct NatsClient(Connection);
+pub struct NatsClient {
+    connection: Connection,
+    handler: EventHandler,
+}
+
 impl NatsClient {
-    pub async fn new(config: &Config) -> NatsClient {
+    pub async fn new(handler: EventHandler, config: &Config) -> NatsClient {
         let opts = Options::with_user_pass(&config.user, &config.pass);
-        NatsClient(opts.connect(&config.server).await.expect("Connect err"))
-    }
-    pub async fn subscribe(&self, subject: &str) -> Subscription {
-        self.0.subscribe(&subject).await.expect("Sub")
+        NatsClient {
+            connection: Connection(opts.connect(&config.server)).await.expect("Connect err"),
+            handler: handler,
+        }
     }
 
     pub async fn publish(&self, subject: &str, msg: &str) {
-        self.0.publish(&subject, &msg).await.expect("Pub")
+        self.connection.publish(&subject, &msg).await.expect("Pub")
+    }
+
+    pub async fn subscribe(&self, subject: &str, cb: fn(msg: &str)) {
+        self.handler.register(
+            Event{ 
+                future: self.connection.subscribe(&subject).await.expect("Sub").await,
+                cb: cb,
+            }
+        );
     }
 }
 
