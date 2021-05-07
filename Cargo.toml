@@ -10,3 +10,4 @@ edition = "2018"
 async-nats = ">=0.9"
 tokio = { version = ">=1", features = ["full"] }
 async-trait = ">=0.1"
+futures = "*"

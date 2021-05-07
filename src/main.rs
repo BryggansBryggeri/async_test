@@ -1,7 +1,8 @@
 use async_nats::{Connection, Options, Subscription};
 use async_trait::async_trait;
-use tokio::{join, select};
+use tokio::{join};
 use tokio::time::{self, Duration};
+use futures::{future, pin_mut};
 
 struct Log {
     nats: NatsClient,
@@ -11,24 +12,22 @@ struct Log {
 impl PubSub for Log {
     async fn client_loop(self) {
         // A msg on the 'tick' subject is received every 5 seconds.
-        let ticking_subj = self.nats.subscribe("tick").await;
+        let mut ticking_subj = self.nats.subscribe("tick").await;
         // The 'spor_1' subject receives messages sporadically, unpredictable.
-        let sporadic_subj_1 = self.nats.subscribe("spor_1").await;
+        let mut sporadic_subj_1 = self.nats.subscribe("spor_1").await;
+        let mut tick = ticking_subj.next();
+        let mut spor_1 = sporadic_subj_1.next();
         loop {
-            // It seems a bit strange for me to call next() here, but I can't find a better place.
-            // I don't know what impact calling next() multiple times before actually using the
-            // output.
-            let tick = ticking_subj.next();
-            let spor_1 = sporadic_subj_1.next();
-            // I need to pin for it to compile.
-            tokio::pin!(tick, spor_1);
-            select! {
-                _ = &mut spor_1 => {
+            let current = future::select(tick, spor_1).await;
+            match current {
+                future::Either::Left((spor_val,_)) => {
                     println!("handling spor_1");
-                }
-                _ = &mut tick => {
+                    spor_1 = sporadic_subj_1.next();
+                },
+                future::Either::Left((tick_val,_)) => {
                     println!("handling tick");
-                }
+                    tick = ticking_subj.next();
+                },
             }
         }
     }
