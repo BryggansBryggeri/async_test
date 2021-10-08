@@ -1,21 +1,20 @@
 use async_nats::{Connection, Options, Subscription};
 use async_trait::async_trait;
-use std::sync::Mutex;
 use tokio::join;
 use tokio::time::{self, Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-pub struct ClientState(Mutex<bool>);
+pub struct ClientState(AtomicBool);
 
 impl ClientState {
     fn new() -> Self {
-        ClientState(Mutex::new(true))
+        ClientState(AtomicBool::new(true))
     }
-    fn active(&self) -> bool {
-        *self.0.lock().unwrap()
+    fn is_active(&self) -> bool {
+        self.0.fetch_and(true, Ordering::SeqCst)
     }
     fn inactivate(&self) {
-        let mut inner = self.0.lock().unwrap();
-        *inner = false;
+        self.0.fetch_and(false, Ordering::SeqCst);
     }
 }
 
@@ -31,9 +30,8 @@ impl PubSub for Log {
         // The 'spor_1' subject receives messages sporadically, unpredictable.
         let sporadic_subj_1 = self.nats.subscribe("spor_1").await;
         let state = ClientState::new();
-        // let active_2 = active.clone();
         let ticking = async {
-            while state.active() {
+            while state.is_active() {
                 let _tick = ticking_subj.next().await;
                 println!("handling tick");
             }
