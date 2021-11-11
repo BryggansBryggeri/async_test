@@ -1,20 +1,52 @@
 use async_nats::{Connection, Options, Subscription};
 use async_trait::async_trait;
-use tokio::join;
 use tokio::time::{self, Duration};
 use std::sync::atomic::{AtomicBool, Ordering};
+use futures::future::join_all;
 
-pub struct ClientState(AtomicBool);
+#[tokio::main]
+async fn main() {
+    let supervisor = Supervisor {
+        nats: NatsClient::new().await,
+    };
+    let supervisor_loop = supervisor.client_loop();
+    supervisor_loop.await;
+}
 
-impl ClientState {
-    fn new() -> Self {
-        ClientState(AtomicBool::new(true))
-    }
-    fn is_active(&self) -> bool {
-        self.0.fetch_and(true, Ordering::SeqCst)
-    }
-    fn inactivate(&self) {
-        self.0.fetch_and(false, Ordering::SeqCst);
+struct Supervisor {
+    nats: NatsClient,
+}
+
+#[async_trait]
+impl PubSub for Supervisor {
+    async fn client_loop(self) {
+        let mut clients = Vec::new();
+        let ticker = Ticker {
+            nats: NatsClient::new().await,
+        };
+        let ticker_loop = ticker.client_loop();
+        clients.push(ticker_loop);
+
+        let start_log_subj = self.nats.subscribe("supervisor.start_log").await;
+        let stop_log_subj = self.nats.subscribe("supervisor.stop_log").await;
+        let start_log = async {
+            loop {
+                let _msg = start_log_subj.next().await.unwrap().data;
+                let log = Log {
+                    nats: NatsClient::new().await,
+                };
+                let log_loop = log.client_loop();
+                clients.push(log_loop);
+            }
+        };
+        let stop_log = async {
+            loop {
+                let _msg = start_log_subj.next().await.unwrap().data;
+                self.nats.publish("command", "aba").await;
+            }
+        };
+
+        join_all(clients);
     }
 }
 
@@ -24,11 +56,10 @@ struct Log {
 
 #[async_trait]
 impl PubSub for Log {
-    async fn client_loop(mut self) {
+    async fn client_loop(self) {
         // A msg on the 'tick' subject is received every 5 seconds.
         let ticking_subj = self.nats.subscribe("tick").await;
-        // The 'spor_1' subject receives messages sporadically, unpredictable.
-        let sporadic_subj_1 = self.nats.subscribe("spor_1").await;
+        let command_subj = self.nats.subscribe("command").await;
         let state = ClientState::new();
         let ticking = async {
             while state.is_active() {
@@ -36,12 +67,13 @@ impl PubSub for Log {
                 println!("handling tick");
             }
         };
-        let sporadic = async {
-            let _spor = sporadic_subj_1.next().await;
-            println!("handling spor_1");
+
+        let command = async {
+            let _comm = command_subj.next().await;
+            println!("Stopping log client.");
             state.inactivate();
         };
-        tokio::join!(ticking, sporadic);
+        tokio::join!(ticking, command);
         println!("Exiting loop.");
     }
 }
@@ -82,15 +114,17 @@ impl NatsClient {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let log = Log {
-        nats: NatsClient::new().await,
-    };
-    let ticker = Ticker {
-        nats: NatsClient::new().await,
-    };
-    let ticker_loop = ticker.client_loop();
-    let log_loop = log.client_loop();
-    join!(ticker_loop, log_loop);
+pub struct ClientState(AtomicBool);
+
+impl ClientState {
+    fn new() -> Self {
+        ClientState(AtomicBool::new(true))
+    }
+    fn is_active(&self) -> bool {
+        self.0.fetch_and(true, Ordering::SeqCst)
+    }
+    fn inactivate(&self) {
+        self.0.fetch_and(false, Ordering::SeqCst);
+    }
 }
+
