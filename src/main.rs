@@ -1,8 +1,8 @@
 use async_nats::{Connection, Options, Subscription};
 use async_trait::async_trait;
+use futures::{future::join_all};
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 use tokio::time::{self, Duration};
-use std::sync::atomic::{AtomicBool, Ordering};
-use futures::future::join_all;
 
 #[tokio::main]
 async fn main() {
@@ -20,33 +20,37 @@ struct Supervisor {
 #[async_trait]
 impl PubSub for Supervisor {
     async fn client_loop(self) {
-        let mut clients = Vec::new();
+        let mut clients = Mutex::new(Vec::new());
         let ticker = Ticker {
             nats: NatsClient::new().await,
         };
         let ticker_loop = ticker.client_loop();
-        clients.push(ticker_loop);
+        let mut aba = clients.lock().unwrap();
+        aba.push(ticker_loop);
 
-        let start_log_subj = self.nats.subscribe("supervisor.start_log").await;
-        let stop_log_subj = self.nats.subscribe("supervisor.stop_log").await;
-        let start_log = async {
+        let start_log_subj = self.nats.subscribe("command.start_log").await;
+        let log_handle = async {
             loop {
-                let _msg = start_log_subj.next().await.unwrap().data;
+                let _ = start_log_subj.next().await.unwrap();
                 let log = Log {
                     nats: NatsClient::new().await,
                 };
+                println!("Recv starting log");
                 let log_loop = log.client_loop();
-                clients.push(log_loop);
+                let mut aba = clients.lock().unwrap();
+                aba.push(log_loop);
             }
         };
-        let stop_log = async {
+        let kill_client_subj = self.nats.subscribe("command.kill_client.*").await;
+        let kill_client = async {
             loop {
-                let _msg = start_log_subj.next().await.unwrap().data;
-                self.nats.publish("command", "aba").await;
+                let msg = kill_client_subj.next().await.unwrap();
+                let id = msg.subject.split('.').last().expect("No id in subj");
+                let pub_subj = format!("supervisor.kill_client.{}", id);
+                self.nats.publish(&pub_subj, "").await;
             }
         };
-
-        join_all(clients);
+        tokio::join!(join_all(clients), kill_client, log_handle);
     }
 }
 
@@ -59,7 +63,7 @@ impl PubSub for Log {
     async fn client_loop(self) {
         // A msg on the 'tick' subject is received every 5 seconds.
         let ticking_subj = self.nats.subscribe("tick").await;
-        let command_subj = self.nats.subscribe("command").await;
+        let command_subj = self.nats.subscribe("supervisor.kill_client.log").await;
         let state = ClientState::new();
         let ticking = async {
             while state.is_active() {
@@ -127,4 +131,3 @@ impl ClientState {
         self.0.fetch_and(false, Ordering::SeqCst);
     }
 }
-
