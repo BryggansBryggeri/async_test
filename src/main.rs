@@ -1,8 +1,8 @@
 use async_nats::{Connection, Options, Subscription};
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::join;
 use tokio::time::{self, Duration};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct ClientState(AtomicBool);
 
